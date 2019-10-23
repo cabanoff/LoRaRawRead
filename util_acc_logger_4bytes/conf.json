@@ -1,0 +1,8 @@
+{
+    "concentrator_conf": {
+        "bandwidth": 125, /* 125kHz */
+        "spread_factor": 8,
+        "cmd01_send_duration": 4000, /* millisecond */
+        "cmd01_receive_duration": 4000
+    }
+}

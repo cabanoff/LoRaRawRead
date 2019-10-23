@@ -1,0 +1,19 @@
+{
+    "concentrator_conf": {
+        "bandwidth": 125, /* 125kHz */
+        "spread_factor": 8,
+	"control_frequency": 869120000,
+	"programming_frequency": 869400000,
+	"receiver_frequency": 864500000,
+	"chan_0": -400000,
+	"chan_1": -200000,
+	"chan_2": 0,
+	"chan_3": 140000,
+	"chan_4": 280000,
+	"chan_5": 320000,
+	"chan_6": 350000,
+	"chan_7": 400000,
+        "cmd01_send_duration": 4000, /* millisecond */
+        "cmd01_receive_duration": 4000
+    }
+}
