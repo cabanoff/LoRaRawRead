@@ -74,6 +74,9 @@ uint32_t crc32(const uint8_t *buffer, uint32_t length) {
 #define DEFAULT_NOTCH_FREQ          129000U /* 129 kHz */
 #define DEFAULT_SX127X_RSSI_OFFSET  -4 /* dB */
 
+#define PROG_BUF_SIZE 121
+#define MAX_FILE_SIZE 70000
+
 /* -------------------------------------------------------------------------- */
 /* --- PRIVATE VARIABLES (GLOBAL) ------------------------------------------- */
 
@@ -142,6 +145,23 @@ static struct lgw_tx_gain_lut_s txgain_lut = {
 	}
 };
 
+
+	/* RF configuration (TX fail if RF chain is not enabled) */
+	enum lgw_radio_type_e radio_type = LGW_RADIO_TYPE_SX1257;
+	uint8_t clocksource = 1; /* Radio B is source by default */
+	struct lgw_conf_board_s boardconf;
+	struct lgw_conf_lbt_s lbtconf;
+	struct lgw_conf_rxrf_s rfconf;
+	struct lgw_conf_rxif_s ifconf;
+
+	/* allocate memory for packet sending */
+	struct lgw_pkt_tx_s txpkt; /* array containing 1 outbound packet + metadata */
+
+	/* allocate memory for packet fetching and processing */
+	struct lgw_pkt_rx_s rxpkt[16]; /* array containing up to 16 inbound packets metadata */
+	struct lgw_pkt_rx_s *p; /* pointer on a RX packet */
+	int nb_pkt;
+
 /* -------------------------------------------------------------------------- */
 /* --- PRIVATE FUNCTIONS DECLARATION ---------------------------------------- */
 
@@ -154,6 +174,8 @@ uint16_t time_interval_ms (struct timespec *time_point);
 int parse_configuration(const char * conf_file);
 
 void open_csv_log(void);
+
+uint8_t wait_mess(uint8_t command, uint8_t tx_number);
 
 /* -------------------------------------------------------------------------- */
 /* --- PRIVATE FUNCTIONS DEFINITION ----------------------------------------- */
@@ -479,6 +501,59 @@ uint8_t parse_bitaddres_to_number(uint8_t n) { //return number of transmitter by
   }
   return 0;
 }
+/************************************************************************
+ * 
+ * return 1 - received command from tx_number
+ * 		  0  - otherwise
+ * 		  2  - error
+ * **********************************************************************/
+uint8_t wait_mess(uint8_t command, uint8_t tx_number)
+{
+	bool flag;
+	time_t time_point;
+	/* to do: waiting command message*/
+    time(&time_point);
+    struct timespec sleep_time = {0, 3000000}; /* 3 ms */
+    /* receive packet */
+    flag = false;
+   // received = 0;
+    while (time(NULL) - time_point < 2 && (flag != true)) {
+      //++cycle_count;
+
+      /* fetch packets */
+      nb_pkt = lgw_receive(ARRAY_SIZE(rxpkt), rxpkt);
+      if (nb_pkt == LGW_HAL_ERROR) {
+        MSG("ERROR: failed packet fetch, exiting\n");
+        return 2; //exit failure
+      } else if (nb_pkt == 0) {
+        clock_nanosleep(CLOCK_MONOTONIC, 0, &sleep_time, NULL); /* wait a short time if no packets */
+      } else {
+        for (int i=0; i < nb_pkt; ++i) {
+          p = &rxpkt[i];
+
+          if (p->status != STAT_CRC_OK) {
+            puts("\"CRC_ERROR\" ");
+          }
+
+          if (p->status == STAT_CRC_OK) {
+
+
+            if (p->payload[0] == command) {
+              if ((1 << (p->payload[1] - 1)) == tx_number) {
+                
+                flag = true;
+                break;
+              }
+              //printf("rceived 0x0B");
+            }
+            puts("\"\n");
+          }
+        }
+      }
+    }
+    if(flag != true)return 0;
+    else return 1;
+}
 
 /* -------------------------------------------------------------------------- */
 /* --- MAIN FUNCTION -------------------------------------------------------- */
@@ -488,7 +563,8 @@ int main(int argc, char **argv) {
 	uint8_t status_var;
 	FILE *bfp; /*pointer to binary file*/
 	size_t bfSize = 0;
-	uint8_t *bfBuff;
+	size_t bfSizeReal = 0;
+	uint8_t bfBuff[MAX_FILE_SIZE];
 	uint32_t bfCrc = 0;
 
 	/* configuration file related */
@@ -528,21 +604,6 @@ int main(int argc, char **argv) {
 	//int16_t received_value_y = 0;
 	//int16_t received_value_z = 0;
 
-	/* RF configuration (TX fail if RF chain is not enabled) */
-	enum lgw_radio_type_e radio_type = LGW_RADIO_TYPE_SX1257;
-	uint8_t clocksource = 1; /* Radio B is source by default */
-	struct lgw_conf_board_s boardconf;
-	struct lgw_conf_lbt_s lbtconf;
-	struct lgw_conf_rxrf_s rfconf;
-	struct lgw_conf_rxif_s ifconf;
-
-	/* allocate memory for packet sending */
-	struct lgw_pkt_tx_s txpkt; /* array containing 1 outbound packet + metadata */
-
-	/* allocate memory for packet fetching and processing */
-	struct lgw_pkt_rx_s rxpkt[16]; /* array containing up to 16 inbound packets metadata */
-	struct lgw_pkt_rx_s *p; /* pointer on a RX packet */
-	int nb_pkt;
 
 	/* local timestamp variables until we get accurate GPS time */
 	struct timespec fetch_time;
@@ -605,22 +666,34 @@ int main(int argc, char **argv) {
 			}
 			//get file size
 			fseek(bfp, 0, SEEK_END);
-			bfSize = ftell(bfp);
+			bfSizeReal = ftell(bfp);
+			if(bfSizeReal%(PROG_BUF_SIZE-1))bfSize = (bfSizeReal/(PROG_BUF_SIZE-1) + 1)*(PROG_BUF_SIZE-1);  //make multiple of (PROG_BUF_SIZE-1)
+			else bfSize = bfSizeReal;
 			rewind(bfp);
-
-			bfBuff = (uint8_t*) malloc(sizeof(uint8_t) * bfSize);
-			if (bfBuff == NULL) {
+			MSG("file size - %d\n",bfSizeReal);
+			MSG("sending buffer size - %d\n",bfSize);
+			
+			if (bfSize > MAX_FILE_SIZE) {
 				MSG("ERROR: can't allocate memory for program.bin file\n");
 				return EXIT_FAILURE;
 			}
 
-			if (fread(bfBuff, 1, bfSize, bfp) != bfSize) {
+			if (fread(bfBuff, 1, bfSizeReal, bfp) != bfSizeReal) {
 				MSG("ERROR: file reading error");
 				return EXIT_FAILURE;
 			}
 
 			fclose(bfp);
-
+			
+/*********************fill buffer with 1 for debugging           **/
+			//bfSize = (PROG_BUF_SIZE - 1)*10;
+			//j = 0;
+			//for(i = 0; i < bfSize; i++)
+			//{
+				//bfBuff[i] = j;
+				//if(++j == PROG_BUF_SIZE - 1)j = 0;
+			//}
+/*******************************end debug section              ****/
 			bfCrc = crc32(bfBuff, bfSize);
 			/*bfSize = 258;
 			uint8_t b1 = (uint8_t) bfSize;
@@ -1538,7 +1611,7 @@ int main(int argc, char **argv) {
 		txpkt.coderate = CR_LORA_4_5;
 		txpkt.invert_pol = invert;
 		txpkt.preamble = preamb;
-		txpkt.size = 129;//pl_size;
+		txpkt.size = PROG_BUF_SIZE + 4;//+crc
 
 		txpkt.payload[0] = 0x0A;
 		txpkt.payload[1] = transmitter_numbers;
@@ -1635,101 +1708,86 @@ int main(int argc, char **argv) {
 		i = 0;
 		j = 0;
 		int r = 0;
+		uint8_t sendBuffer[PROG_BUF_SIZE + 4];  //
+		uint32_t buffCRC;
 		while (j < bfSize) {
-			//for (uint32_t i = 0; i < bfSize; ++i) {
-			if (i % 129 == 0) {
-				if (i != 0) {
-					r = lgw_send(txpkt); /* non-blocking scheduling of TX packet */
-					if (r == LGW_HAL_ERROR) {
-						printf("ERROR\n");
-						return EXIT_FAILURE;
-					} else {
-						/* wait for packet to finish sending */
-						do {
-							wait_ms(2);
-							lgw_status(TX_STATUS, &status_var); /* get TX status */
-						} while (status_var != TX_FREE);
-						printf("Packet %d send OK\n", i/129 - 1);
-					}
-					/* wait inter-packet delay */
-					wait_ms(delay);
-					for (uint8_t k = 0; k < 129; k++) {
-						txpkt.payload[k] = 0; //set all packet to zero
-					}
-				}
-
-				txpkt.payload[0] = i / 129;
-			} else {
-				txpkt.payload[i % 129] = bfBuff[j];
-				++j;
+			wait_ms(10);//some delay between packets
+			sendBuffer[0] = j/(PROG_BUF_SIZE - 1);
+			for(i = 0;i< PROG_BUF_SIZE - 1;i++){
+				sendBuffer[i + 1] = bfBuff[j+i];
 			}
-			++i;
-		}
-		//send last packet
-		r = lgw_send(txpkt); /* non-blocking scheduling of TX packet */
-		if (r == LGW_HAL_ERROR) {
-			printf("ERROR\n");
-			return EXIT_FAILURE;
-		} else {
-			/* wait for packet to finish sending */
-			do {
-				wait_ms(2);
-				lgw_status(TX_STATUS, &status_var); /* get TX status */
-			} while (status_var != TX_FREE);
-			printf("Last packet %d send OK\n", i/129);
-		}
-		/* wait inter-packet delay */
-		wait_ms(delay);
-
+			buffCRC = crc32(sendBuffer, PROG_BUF_SIZE);
+			memcpy(&sendBuffer[PROG_BUF_SIZE],&buffCRC,4);
+			memcpy(txpkt.payload,sendBuffer,PROG_BUF_SIZE + 4);
+			r = lgw_send(txpkt); /* non-blocking scheduling of TX packet */
+			if (r == LGW_HAL_ERROR) {
+				printf("ERROR\n");
+				return EXIT_FAILURE;
+			} else {
+				/* wait for packet to finish sending */
+				do {
+					wait_ms(2);
+					lgw_status(TX_STATUS, &status_var); /* get TX status */
+				} while (status_var != TX_FREE);
+				printf("Packet %d send OK\n", sendBuffer[0]);
+				j += PROG_BUF_SIZE - 1;
+				
+			}
+		}	
+			
     /* to do: waiting 0x0C message*/
-    time(&time_point);
-    /* receive packet */
-    flag_received_reply = false;
-    received_reply_from = 0;
-    while (time(NULL) - time_point < 2 && (flag_received_reply != true)) {
-      ++cycle_count;
-
-      /* fetch packets */
-      nb_pkt = lgw_receive(ARRAY_SIZE(rxpkt), rxpkt);
-      if (nb_pkt == LGW_HAL_ERROR) {
-        MSG("ERROR: failed packet fetch, exiting\n");
-        return EXIT_FAILURE;
-      } else if (nb_pkt == 0) {
-        clock_nanosleep(CLOCK_MONOTONIC, 0, &sleep_time, NULL); /* wait a short time if no packets */
-      } else {
-        for (i=0; i < nb_pkt; ++i) {
-          p = &rxpkt[i];
-
-          if (p->status != STAT_CRC_OK) {
-            puts("\"CRC_ERROR\" ");
-          }
-
-          if (p->status == STAT_CRC_OK) {
-
-            /* writing packet RSSI */
-            //printf("rssi=%+.0f, %lu\n", p->rssi, sizeof(p->rssi));
-
-            if (p->payload[0] == 0x0C) {
-              if ((1 << (p->payload[1] - 1)) == transmitter_numbers) {
-                //printf("%x, - %x\n", p->payload[2], p->payload[3]);
-                flag_received_reply = true;
-                break;
-              }
-              //printf("rceived 0x0B");
-            }
-            puts("\"\n");
-          }
-        }
-      }
-    }
-    if (flag_received_reply != true) {
+   
+    if (wait_mess(0x0C,transmitter_numbers) != true) {
         MSG("no answer\n");
+        lgw_stop();
         return EXIT_FAILURE;
     }
     if (p->payload[2] == 0) {
         MSG("reprogramming is finished\n");
     } else {
-        MSG("transmission error\n");
+		MSG("transmission error\n");
+		MSG("error headers - %d\n",p->payload[3]);
+		MSG("error packets - %d\n",p->payload[4]);
+        if(p->size == 7){
+			uint16_t messageErr = (uint16_t)(p->payload[6] << 8) + p->payload[5];
+			MSG("Resend packet N - %d\n", messageErr);
+			//****repeating errorneous packet***//
+			wait_ms(100);//some delay 
+			sendBuffer[0] = messageErr;
+			j = messageErr*(PROG_BUF_SIZE - 1);
+			for(i = 0;i < PROG_BUF_SIZE - 1;i++){
+				sendBuffer[i + 1] = bfBuff[j+i];
+			}
+			buffCRC = crc32(sendBuffer, PROG_BUF_SIZE);
+			memcpy(&sendBuffer[PROG_BUF_SIZE],&buffCRC,4);  //write crc
+			memcpy(txpkt.payload,sendBuffer,PROG_BUF_SIZE + 4);
+			r = lgw_send(txpkt); /* non-blocking scheduling of TX packet */
+			if (r == LGW_HAL_ERROR) {
+				printf("ERROR\n");
+				
+				return EXIT_FAILURE;
+			} else {
+				/* wait for packet to finish sending */
+				do {
+					wait_ms(2);
+					lgw_status(TX_STATUS, &status_var); /* get TX status */
+				} while (status_var != TX_FREE);
+				printf("Packet %d send OK\n", sendBuffer[0]);	
+				if (wait_mess(0x0C,transmitter_numbers) != true) {
+					MSG("no answer\n");
+					lgw_stop();
+					return EXIT_FAILURE;
+				}
+				if (p->payload[2] == 0) {
+					MSG("reprogramming is finished\n");
+				} else {
+					MSG("transmission error\n");			
+				}
+			 }
+			
+		}
+        /* clean up before leaving */
+		lgw_stop();
         return EXIT_FAILURE;
     }
 
