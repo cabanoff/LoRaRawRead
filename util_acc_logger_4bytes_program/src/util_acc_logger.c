@@ -97,6 +97,7 @@ int chan_if[8] = {0}; //receiving channels frequency
 uint16_t send_duration_ms = 0;
 uint16_t receive_duration_ms = 0;
 uint8_t transmitter_numbers = 0;	//each bit corresponding transmitter number
+uint8_t sensorNum = 0;
 
 /* clock and log file management */
 time_t now_time;
@@ -705,16 +706,18 @@ int main(int argc, char **argv) {
 			p_ch = strtok(optarg, ",");
 			while (p_ch != NULL /*i = sscanf(optarg, "%i", &xi) != -1*/) {
 				i = sscanf(p_ch, "%i", &xi);
-				if ((i != 1) || ((xi < 1) || (xi > 8))) {
+				printf("input = %d\n",xi);
+				if ((i != 1) || ((xi < 1) || (xi > 255))) {
 					MSG("ERROR: invalid transmitter number\n");
 					usage();
 					return EXIT_FAILURE;
 				} else {
 					//printf("p_ch=%s\n", pch);
 					p_ch = strtok('\0', ", ");
-					transmitter_numbers |= 1 << (xi - 1);
-					//printf("t_n=%d", transmitter_numbers);
-					//MSG("\n");
+					//transmitter_numbers |= 1 << (xi - 1);
+					sensorNum = xi;
+					printf("s_n=%d", sensorNum);
+					MSG("\n");
 				}
 			}
 			break;
@@ -1009,7 +1012,7 @@ int main(int argc, char **argv) {
 		break;
 	case 'p':
 		txpkt.payload[0] = 0x08;
-		txpkt.payload[1] = transmitter_numbers;
+		txpkt.payload[1] = sensorNum;
 		break;
 	}
 
@@ -1447,7 +1450,10 @@ int main(int argc, char **argv) {
 				printf("Transmitter number %d accept command\n", j + 1);
 			}
 		}
-	} else if (action_flag == 'p') { //programming device
+	} 
+/********************************* programming *************************************************/
+	else if (action_flag == 'p') {
+	 //programming device
 		/* waiting 15sec for any message from selected transmitter */
 		/* receive packet */
 		time(&time_point);
@@ -1475,15 +1481,19 @@ int main(int argc, char **argv) {
 						printf("%10u,", p->freq_hz);
 
 						/* writing RF chain */
-						printf("%u,", p->rf_chain);
+						//printf("%u,", p->rf_chain);
 
 						/* writing RX modem/IF chain */
-						printf("%2d,", p->if_chain); /* num of receiving interface from 0, i.e. if_chain+1 = num_of_transmitter*/
+						//printf("%2d,", p->if_chain); /* num of receiving interface from 0, i.e. if_chain+1 = num_of_transmitter*/
+						
+						/* transmitter number*/
+						printf("sensorNum =%d, sensorNumAns = %d ", sensorNum,p->payload[0]);
 
 						/* writing packet RSSI */
-						printf("%+.0f,", p->rssi);
+						printf("RSSI = %+.0f,", p->rssi);
 
-						if (transmitter_numbers == 1 << p->if_chain) {
+						//if (transmitter_numbers == 1 << p->if_chain) {
+						if(sensorNum == p->payload[0]){
 							puts("\n.. received reply from selected transmitter\n");
 							flag_received_reply = true;
 							break;
@@ -1549,7 +1559,8 @@ int main(int argc, char **argv) {
 						//printf("%+.0f\n", p->rssi);
 
 						//if ((p->payload[0] == 9) && (p->payload[1] == parse_bitaddres_to_number(transmitter_numbers))) {
-						if ((p->payload[0] == 9) && (transmitter_numbers == (1 << (p->payload[1] - 1)))) {
+						//if ((p->payload[0] == 9) && (transmitter_numbers == (1 << (p->payload[1] - 1)))) {
+						  if ((p->payload[0] == 9) && (sensorNum == p->payload[1])) {
 							transmitter_numbers_reply = p->payload[1];
 							flag_received_reply = true;
 							received_reply_from = p->if_chain + 1;
@@ -1614,7 +1625,8 @@ int main(int argc, char **argv) {
 		txpkt.size = PROG_BUF_SIZE + 4;//+crc
 
 		txpkt.payload[0] = 0x0A;
-		txpkt.payload[1] = transmitter_numbers;
+		//txpkt.payload[1] = transmitter_numbers;
+		txpkt.payload[1] = sensorNum;
 		txpkt.payload[2] = (uint8_t) bfSize;
 		txpkt.payload[3] = (uint8_t) (bfSize >> 8);
 		txpkt.payload[4] = (uint8_t) bfCrc;
@@ -1670,7 +1682,8 @@ int main(int argc, char **argv) {
 
 						if (p->payload[0] == 0x0B) {
 							printf("0x0B received, byte[2]=%d\n", p->payload[1]);
-							if ((1 << (p->payload[1] - 1)) == transmitter_numbers) {
+							//if ((1 << (p->payload[1] - 1)) == transmitter_numbers) {
+							if (p->payload[1] ==sensorNum) {
 								//printf("%x, - %x\n", p->payload[2], p->payload[3]);
 								flag_received_reply = true;
 								break;
@@ -1748,43 +1761,49 @@ int main(int argc, char **argv) {
 		MSG("transmission error\n");
 		MSG("error headers - %d\n",p->payload[3]);
 		MSG("error packets - %d\n",p->payload[4]);
-        if(p->size == 7){
-			uint16_t messageErr = (uint16_t)(p->payload[6] << 8) + p->payload[5];
-			MSG("Resend packet N - %d\n", messageErr);
-			//****repeating errorneous packet***//
-			wait_ms(100);//some delay 
-			sendBuffer[0] = messageErr;
-			j = messageErr*(PROG_BUF_SIZE - 1);
-			for(i = 0;i < PROG_BUF_SIZE - 1;i++){
-				sendBuffer[i + 1] = bfBuff[j+i];
-			}
-			buffCRC = crc32(sendBuffer, PROG_BUF_SIZE);
-			memcpy(&sendBuffer[PROG_BUF_SIZE],&buffCRC,4);  //write crc
-			memcpy(txpkt.payload,sendBuffer,PROG_BUF_SIZE + 4);
-			r = lgw_send(txpkt); /* non-blocking scheduling of TX packet */
-			if (r == LGW_HAL_ERROR) {
-				printf("ERROR\n");
-				
-				return EXIT_FAILURE;
-			} else {
-				/* wait for packet to finish sending */
-				do {
-					wait_ms(2);
-					lgw_status(TX_STATUS, &status_var); /* get TX status */
-				} while (status_var != TX_FREE);
-				printf("Packet %d send OK\n", sendBuffer[0]);	
-				if (wait_mess(0x0C,transmitter_numbers) != true) {
-					MSG("no answer\n");
-					lgw_stop();
+		MSG("message size - %d\n",p->size);
+        if((p->size >= 7)&&(p->size%2)){			//should be odd
+			for(int ii = 4; ii < p->size-1;)
+			{
+				uint16_t messageErr = p->payload[++ii];
+				messageErr += (uint16_t)(p->payload[++ii] << 8);
+				MSG("Resend packet N - %d\n", messageErr);
+				//****repeating errorneous packet***//
+				wait_ms(100);//some delay 
+				sendBuffer[0] = messageErr;
+				j = messageErr*(PROG_BUF_SIZE - 1);
+				for(i = 0;i < PROG_BUF_SIZE - 1;i++){
+					sendBuffer[i + 1] = bfBuff[j+i];
+				}
+				buffCRC = crc32(sendBuffer, PROG_BUF_SIZE);
+				memcpy(&sendBuffer[PROG_BUF_SIZE],&buffCRC,4);  //write crc
+				memcpy(txpkt.payload,sendBuffer,PROG_BUF_SIZE + 4);
+				r = lgw_send(txpkt); /* non-blocking scheduling of TX packet */
+				if (r == LGW_HAL_ERROR) {
+					printf("ERROR\n");
+					
 					return EXIT_FAILURE;
-				}
-				if (p->payload[2] == 0) {
-					MSG("reprogramming is finished\n");
 				} else {
-					MSG("transmission error\n");			
-				}
-			 }
+					/* wait for packet to finish sending */
+					do {
+						wait_ms(2);
+						lgw_status(TX_STATUS, &status_var); /* get TX status */
+					} while (status_var != TX_FREE);
+					printf("Packet %d send OK\n", sendBuffer[0]);	
+					
+				 }
+			}
 			
+		}
+		if (wait_mess(0x0C,transmitter_numbers) != true) {
+			MSG("no answer\n");
+			lgw_stop();
+			return EXIT_FAILURE;
+		}
+		if (p->payload[2] == 0) {
+			MSG("reprogramming is finished\n");
+		} else {
+			MSG("transmission error\n");			
 		}
         /* clean up before leaving */
 		lgw_stop();

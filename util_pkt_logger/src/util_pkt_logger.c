@@ -36,12 +36,15 @@ Maintainer: Sylvain Miermont
 
 #include "parson.h"
 #include "loragw_hal.h"
+#include "mqtt.h"
+#include "posix_sockets.h"
 
 /* -------------------------------------------------------------------------- */
 /* --- PRIVATE MACROS ------------------------------------------------------- */
 
 #define ARRAY_SIZE(a)   (sizeof(a) / sizeof((a)[0]))
 #define MSG(args...)    fprintf(stderr,"loragw_pkt_logger: " args) /* message that is destined to the user */
+#define ROUND(X)  (X>=0)? (int)0 : (int)((-(X)+0.5))
 
 /* -------------------------------------------------------------------------- */
 /* --- PRIVATE VARIABLES (GLOBAL) ------------------------------------------- */
@@ -73,6 +76,26 @@ int parse_gateway_configuration(const char * conf_file);
 void open_log(void);
 
 void usage (void);
+/**
+ * @brief The function that would be called whenever a PUBLISH is received.
+ * 
+ * @note This function is not used in this example. 
+ */
+void publish_callback(void** unused, struct mqtt_response_publish *published);
+/**
+ * @brief The client's refresher. This function triggers back-end routines to 
+ *        handle ingress/egress traffic to the broker.
+ * 
+ * @note All this function needs to do is call \ref __mqtt_recv and 
+ *       \ref __mqtt_send every so often. I've picked 100 ms meaning that 
+ *       client ingress/egress traffic will be handled every 100 ms.
+ */const char* topicRSSI = "mqtt-kontron/lora-RSSI";
+void* client_refresher(void* client);
+/**
+ * @brief Safelty closes the \p sockfd and cancels the \p client_daemon before \c exit. 
+ */
+void exit_example(int status, int sockfd, pthread_t *client_daemon);
+
 
 /* -------------------------------------------------------------------------- */
 /* --- PRIVATE FUNCTIONS DEFINITION ----------------------------------------- */
@@ -347,7 +370,7 @@ void open_log(void) {
     strftime(iso_date,ARRAY_SIZE(iso_date),"%Y%m%dT%H%M%SZ",gmtime(&now_time)); /* format yyyymmddThhmmssZ */
     log_start_time = now_time; /* keep track of when the log was started, for log rotation */
 
-    sprintf(log_file_name, "pktlog_%s_%s.csv", lgwm_str, iso_date);
+    sprintf(log_file_name, "pktlog/%s.csv", iso_date);
     log_file = fopen(log_file_name, "a"); /* create log file, append if file already exist */
     if (log_file == NULL) {
         MSG("ERROR: impossible to create log file %s\n", log_file_name);
@@ -371,13 +394,49 @@ void usage(void) {
     printf( " -h print this help\n");
     printf( " -r <int> rotate log file every N seconds (-1 disable log rotation)\n");
 }
+/**
+ * @brief The function that would be called whenever a PUBLISH is received.
+ * 
+ * @note This function is not used in this example. 
+ */
+void publish_callback(void** unused, struct mqtt_response_publish *published) 
+{
+    /* not used in this example */
+}
 
+/**
+ * @brief The client's refresher. This function triggers back-end routines to 
+ *        handle ingress/egress traffic to the broker.
+ * 
+ * @note All this function needs to do is call \ref __mqtt_recv and 
+ *       \ref __mqtt_send every so often. I've picked 100 ms meaning that 
+ *       client ingress/egress traffic will be handled every 100 ms.
+ */
+void* client_refresher(void* client)
+{
+    while(1) 
+    {
+        mqtt_sync((struct mqtt_client*) client);
+        usleep(100000U);
+    }
+    return NULL;
+}
+/**
+ * @brief Safelty closes the \p sockfd and cancels the \p client_daemon before \c exit. 
+ */
+void exit_example(int status, int sockfd, pthread_t *client_daemon)
+{
+    if (sockfd != -1) close(sockfd);
+    if (client_daemon != NULL) pthread_cancel(*client_daemon);
+    exit(status);
+}
 /* -------------------------------------------------------------------------- */
 /* --- MAIN FUNCTION -------------------------------------------------------- */
 
 int main(int argc, char **argv)
 {
     int i, j; /* loop and temporary variables */
+    char digits[10]; /* for int to string convertion */
     struct timespec sleep_time = {0, 3000000}; /* 3 ms */
 
     /* clock and log rotation management */
@@ -397,8 +456,13 @@ int main(int argc, char **argv)
 
     /* local timestamp variables until we get accurate GPS time */
     struct timespec fetch_time;
-    char fetch_timestamp[30];
+    char fetch_timestamp[80];
     struct tm * x;
+    /* mqtt variables */
+	const char* addr = "localhost";
+    const char* port = "1883";
+    const char* topic = "mqtt-kontron/lora-gatway"; 
+    const char* topicRSSI = "mqtt-kontron/lora-RSSI";
 
     /* parse command line options */
     while ((i = getopt (argc, argv, "hr:")) != -1) {
@@ -472,14 +536,69 @@ int main(int argc, char **argv)
     /* opening log file and writing CSV header*/
     time(&now_time);
     open_log();
+/****************************************************begin MQTT section********************************************/	
+	/* open the non-blocking TCP socket (connecting to the broker) */
+    int sockfd = open_nb_socket(addr, port);
+	if (sockfd == -1) {
+        perror("Failed to open socket: ");
+        exit_example(EXIT_FAILURE, sockfd, NULL);
+    }
+    int sockfdRSSI = open_nb_socket(addr, port);
+	if (sockfdRSSI == -1) {
+        perror("Failed to open socket RSSI: ");
+        exit_example(EXIT_FAILURE, sockfdRSSI, NULL);
+    }
+	/* setup a client */
+    struct mqtt_client client;
+    uint8_t sendbuf[2048]; /* sendbuf should be large enough to hold multiple whole mqtt messages */
+    uint8_t recvbuf[1024]; /* recvbuf should be large enough any whole mqtt message expected to be received */
+	char mqtt_message[612 + 1]; /* string with data to brocker */
+    mqtt_init(&client, sockfd, sendbuf, sizeof(sendbuf), recvbuf, sizeof(recvbuf), publish_callback);
+    mqtt_connect(&client, "kontron_publishing_client", NULL, NULL, 0, NULL, NULL, 0, 400);
 
+    /* check that we don't have any errors */
+    if (client.error != MQTT_OK) {
+        fprintf(stderr, "error: %s\n", mqtt_error_str(client.error));
+        exit_sig = 1; // exit_example(EXIT_FAILURE, sockfd, NULL);
+    }
+    
+    /* setup a client */
+	struct mqtt_client clientRSSI;
+    uint8_t sendbufRSSI[2048]; /* sendbuf should be large enough to hold multiple whole mqtt messages */
+    uint8_t recvbufRSSI[1024]; /* recvbuf should be large enough any whole mqtt message expected to be received */
+	char mqtt_messageRSSI[64]; /* string with data to brocker */
+    mqtt_init(&clientRSSI, sockfdRSSI, sendbufRSSI, sizeof(sendbufRSSI), recvbufRSSI, sizeof(recvbufRSSI), publish_callback);
+    mqtt_connect(&clientRSSI, "kontron_publishing_clientRSSI", NULL, NULL, 0, NULL, NULL, 0, 400);
+	/* check that we don't have any errors */
+    if (clientRSSI.error != MQTT_OK) {
+        fprintf(stderr, "error: %s\n", mqtt_error_str(clientRSSI.error));
+        exit_sig = 1; // exit_example(EXIT_FAILURE, sockfd, NULL);
+    }
+
+    /* start a thread to refresh the client (handle egress and ingree client traffic) */
+    pthread_t client_daemon;
+    if(pthread_create(&client_daemon, NULL, client_refresher, &client)) {
+        fprintf(stderr, "Failed to start client daemon.\n");
+        exit_sig = 1; //exit_example(EXIT_FAILURE, sockfd, NULL);
+    }
+    /* start a thread to refresh the client (handle egress and ingree client traffic) */
+    pthread_t clientRSSI_daemon;
+    if(pthread_create(&clientRSSI_daemon, NULL, client_refresher, &clientRSSI)) {
+        fprintf(stderr, "Failed to start client daemon.\n");
+        exit_sig = 1; //exit_example(EXIT_FAILURE, sockfd, NULL);
+    }
+/****************************************************end MQTT section*********************************************/
+	
     /* main loop */
+    uint8_t samePayload;
+    char oldPayload[0xFF];
+    float rssi = -120,snr = -20;
     while ((quit_sig != 1) && (exit_sig != 1)) {
         /* fetch packets */
         nb_pkt = lgw_receive(ARRAY_SIZE(rxpkt), rxpkt);
         if (nb_pkt == LGW_HAL_ERROR) {
             MSG("ERROR: failed packet fetch, exiting\n");
-            return EXIT_FAILURE;
+            exit_example(EXIT_FAILURE, sockfd, &client_daemon); // return EXIT_FAILURE;
         } else if (nb_pkt == 0) {
             clock_nanosleep(CLOCK_MONOTONIC, 0, &sleep_time, NULL); /* wait a short time if no packets */
         } else {
@@ -492,8 +611,8 @@ int main(int argc, char **argv)
         /* log packets */
         for (i=0; i < nb_pkt; ++i) {
             p = &rxpkt[i];
-						if(p->status == STAT_CRC_OK)
-						{
+            if(p->status == STAT_CRC_OK)
+            {
             /* writing gateway ID */
             fprintf(log_file, "\"%08X%08X\",", (uint32_t)(lgwm >> 32), (uint32_t)(lgwm & 0xFFFFFFFF));
 
@@ -592,7 +711,55 @@ int main(int argc, char **argv)
             fputs("\"\n", log_file);
             fflush(log_file);
             ++pkt_in_log;
-						}
+/******************************************begin MQTT section******************************************/
+			if((sizeof(mqtt_message) > (p->size)*2 + 1)&&(p->status == STAT_CRC_OK)){      
+                samePayload = 1;    
+                for (j = 0; j < p->size; ++j) {
+                     
+                    sprintf(digits, "%02X",p->payload[j]);
+                    mqtt_message[j*2] = digits[0];
+                    mqtt_message[j*2 +1] = digits[1];
+                    if(p->payload[j] != oldPayload[j])samePayload = 0; //check for the same payload
+                    oldPayload[j] = p->payload[j];
+                }
+                mqtt_message[(p->size)*2] = 0; /*end of string*/
+                char timebuf[80];
+                /* writing UTC timestamp*/
+                snprintf(timebuf, sizeof(timebuf), "%s", fetch_timestamp);
+                 
+                /* publish the message */
+                char application_message[sizeof(mqtt_message)+sizeof(timebuf)+1];
+                sprintf(application_message,"%s,%s",fetch_timestamp,mqtt_message);
+                if(!samePayload){
+
+                    printf("MQTT message %s,%s \n", timebuf,mqtt_message);
+                    mqtt_publish(&client, topic, application_message, strlen(application_message), MQTT_PUBLISH_QOS_0);
+                    /* check for errors */
+                    if (client.error != MQTT_OK) {
+                        fprintf(stderr, "error: %s\n", mqtt_error_str(client.error));
+                        exit_sig = 1; //exit_example(EXIT_FAILURE, sockfd, &client_daemon);
+                    }
+					char RSSI_message[sizeof(mqtt_messageRSSI)];
+					sprintf(RSSI_message,"%d,%d.\0",ROUND(rssi),ROUND(snr));
+					printf("RSSI = %d SNR = %d\n",ROUND(rssi),ROUND(snr));
+					mqtt_publish(&clientRSSI, topicRSSI, RSSI_message, strlen(RSSI_message), MQTT_PUBLISH_QOS_0);
+					/* check for errors */
+                    if (clientRSSI.error != MQTT_OK) {
+                        fprintf(stderr, "error: %s\n", mqtt_error_str(clientRSSI.error));
+                        exit_sig = 1; //exit_example(EXIT_FAILURE, sockfd, &client_daemon);
+                    }
+					rssi = p->rssi;
+					snr = p->snr;
+                }
+                else{
+					if(p->rssi > rssi)rssi = p->rssi;
+					if(p->snr > snr)snr = p->snr;
+					printf("MQTT message not published %s,%s \n", timebuf,mqtt_message);
+					printf("RSSI = %d SNR = %d\n",ROUND(rssi),ROUND(snr));
+				}
+            }
+/********************************************end MQTT section*****************************************/
+            }
         }
 
         /* check time and rotate log file if necessary */
@@ -622,7 +789,7 @@ int main(int argc, char **argv)
     }
 
     MSG("INFO: Exiting packet logger program\n");
-    return EXIT_SUCCESS;
+    exit_example(EXIT_SUCCESS, sockfd, &client_daemon); // return EXIT_SUCCESS;
 }
 
 /* --- EOF ------------------------------------------------------------------ */

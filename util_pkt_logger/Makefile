@@ -9,6 +9,7 @@ ARCH ?=
 CROSS_COMPILE ?=
 
 ### External constant definitions
+# must get library build option to know if mpsse must be linked or not
 
 include $(LGW_PATH)/library.cfg
 
@@ -18,8 +19,6 @@ CC := $(CROSS_COMPILE)gcc
 AR := $(CROSS_COMPILE)ar
 
 CFLAGS=-O2 -Wall -Wextra -std=c99 -Iinc -I.
-
-OBJDIR = obj
 
 ### Constants for LoRa concentrator HAL library
 # List the library sub-modules that are used by the application
@@ -36,7 +35,7 @@ LIBS := -lloragw -lrt -lm
 all: $(APP_NAME)
 
 clean:
-	rm -f $(OBJDIR)/*.o
+	rm -f obj/*.o
 	rm -f $(APP_NAME)
 
 ### HAL library (do no force multiple library rebuild even with 'make -B')
@@ -53,18 +52,19 @@ $(LGW_PATH)/libloragw.a: $(LGW_INC)
 
 ### Sub-modules compilation
 
-$(OBJDIR):
-	mkdir -p $(OBJDIR)
-
-$(OBJDIR)/parson.o: src/parson.c inc/parson.h | $(OBJDIR)
+obj/parson.o: src/parson.c inc/parson.h
+	$(CC) -c $(CFLAGS) $< -o $@
+obj/mqtt.o: src/mqtt.c inc/mqtt.h
+	$(CC) -c $(CFLAGS) $< -o $@
+obj/mqtt_pal.o: src/mqtt_pal.c inc/mqtt.h
 	$(CC) -c $(CFLAGS) $< -o $@
 
 ### Main program compilation and assembly
 
-$(OBJDIR)/$(APP_NAME).o: src/$(APP_NAME).c $(LGW_INC) inc/parson.h | $(OBJDIR)
-	$(CC) -c $(CFLAGS) -I$(LGW_PATH)/inc $< -o $@
+obj/$(APP_NAME).o: src/$(APP_NAME).c $(LGW_INC) inc/parson.h inc/mqtt.h inc/posix_sockets.h
+	$(CC) -c $(CFLAGS) -I$(LGW_PATH)/inc $< -pthread -o $@
 
-$(APP_NAME): $(OBJDIR)/$(APP_NAME).o $(LGW_PATH)/libloragw.a $(OBJDIR)/parson.o
-	$(CC) -L$(LGW_PATH) $< $(OBJDIR)/parson.o -o $@ $(LIBS)
+$(APP_NAME): obj/$(APP_NAME).o $(LGW_PATH)/libloragw.a obj/parson.o obj/mqtt.o obj/mqtt_pal.o
+	$(CC) -L$(LGW_PATH) $< obj/parson.o obj/mqtt.o obj/mqtt_pal.o -lpthread -o $@ $(LIBS)
 
 ### EOF
