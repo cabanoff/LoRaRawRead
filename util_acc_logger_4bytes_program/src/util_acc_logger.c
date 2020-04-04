@@ -371,53 +371,7 @@ int parse_configuration(const char * conf_file) {
 		MSG("WARNING: Data type for cmd01_receive_duration seems wrong, please check\n");
 	}
 
-	/*MSG("INFO: lorawan_public %d, clksrc %d\n", boardconf.lorawan_public, boardconf.clksrc);
-	if (lgw_board_setconf(boardconf) != LGW_HAL_SUCCESS) {
-	    MSG("ERROR: Failed to configure board\n");
-	    return -1;
-	}
-
-	val = json_object_dotget_value(conf, param_name);
-	    if (json_value_get_type(val) == JSONBoolean) {
-	        rfconf.enable = (bool)json_value_get_boolean(val);
-	    } else {
-	        rfconf.enable = false;
-	    }
-	    if (rfconf.enable == false) {
-	        MSG("INFO: radio %i disabled\n", i);
-	    } else  {
-	        snprintf(param_name, sizeof param_name, "radio_%i.freq", i);
-	        rfconf.freq_hz = (uint32_t)json_object_dotget_number(conf, param_name);
-	        snprintf(param_name, sizeof param_name, "radio_%i.rssi_offset", i);
-	        rfconf.rssi_offset = (float)json_object_dotget_number(conf, param_name);
-	        snprintf(param_name, sizeof param_name, "radio_%i.type", i);
-	        str = json_object_dotget_string(conf, param_name);
-	        if (!strncmp(str, "SX1255", 6)) {
-	            rfconf.type = LGW_RADIO_TYPE_SX1255;
-	        } else if (!strncmp(str, "SX1257", 6)) {
-	            rfconf.type = LGW_RADIO_TYPE_SX1257;
-	        } else {
-	            MSG("WARNING: invalid radio type: %s (should be SX1255 or SX1257)\n", str);
-	        }
-	        snprintf(param_name, sizeof param_name, "radio_%i.tx_enable", i);
-	        val = json_object_dotget_value(conf, param_name);
-	        if (json_value_get_type(val) == JSONBoolean) {
-	            rfconf.tx_enable = (bool)json_value_get_boolean(val);
-	            if (rfconf.tx_enable == true) {
-
-	                snprintf(param_name, sizeof param_name, "radio_%i.tx_notch_freq", i);
-	                rfconf.tx_notch_freq = (uint32_t)json_object_dotget_number(conf, param_name);
-	            }
-	        } else {
-	            rfconf.tx_enable = false;
-	        }
-	        MSG("INFO: radio %i enabled (type %s), center frequency %u, RSSI offset %f, tx enabled %d, tx_notch_freq %u\n", i, str, rfconf.freq_hz, rfconf.rssi_offset, rfconf.tx_enable, rfconf.tx_notch_freq);
-	    }
-
-	    if (lgw_rxrf_setconf(i, rfconf) != LGW_HAL_SUCCESS) {
-	        MSG("ERROR: invalid configuration for radio %i\n", i);
-	        return -1;
-	    }*/
+	
 
 	json_value_free(root_val);
 	return 0;
@@ -1019,440 +973,9 @@ int main(int argc, char **argv) {
 	/* main loop */
 	cycle_count = 0;
 	time_t time_point;
-
-	if (action_flag == 'e') {
-		/* continuous transmitting enable command for 2000 msec*/
-		printf("Sending enable command to selected transmitters for %d msec\n", send_duration_ms);
-		clock_gettime(CLOCK_REALTIME, &fetch_time);
-		while (time_interval_ms(&fetch_time) < send_duration_ms) {
-			/* send packet */
-			i = lgw_send(txpkt); /* non-blocking scheduling of TX packet */
-			if (i == LGW_HAL_ERROR) {
-				printf("ERROR\n");
-				return EXIT_FAILURE;
-			} else {
-				/* wait for packet to finish sending */
-				do {
-					wait_ms(5);
-					lgw_status(TX_STATUS, &status_var); /* get TX status */
-				} while (status_var != TX_FREE);
-				/*printf("OK\n");*/
-			}
-			/* wait inter-packet delay */
-			wait_ms(delay);
-		}
-
-		//time(&time_point);
-		/* receive packet */
-		clock_gettime(CLOCK_REALTIME, &fetch_time);
-		while (time_interval_ms(&fetch_time) < receive_duration_ms) {
-			++cycle_count;
-
-			/* fetch packets */
-			nb_pkt = lgw_receive(ARRAY_SIZE(rxpkt), rxpkt);
-			if (nb_pkt == LGW_HAL_ERROR) {
-				MSG("ERROR: failed packet fetch, exiting\n");
-				return EXIT_FAILURE;
-			} else if (nb_pkt == 0) {
-				clock_nanosleep(CLOCK_MONOTONIC, 0, &sleep_time, NULL); /* wait a short time if no packets */
-			} else {
-				/* local timestamp generation until we get accurate GPS time */
-				//clock_gettime(CLOCK_REALTIME, &fetch_time);
-				//x = gmtime(&(fetch_time.tv_sec));
-				//sprintf(fetch_timestamp,"%04i-%02i-%02i %02i:%02i:%02i.%04liZ",(x->tm_year)+1900,(x->tm_mon)+1,x->tm_mday,x->tm_hour,x->tm_min,x->tm_sec, ((fetch_time.tv_nsec)/1000000)); /* ISO 8601 format */
-			}
-
-			for (i=0; i < nb_pkt; ++i) {
-				p = &rxpkt[i];
-				if (p->status == STAT_CRC_OK) {
-
-					/* writing UTC timestamp*/
-					printf("\"%s\",", fetch_timestamp);
-					// TODO: replace with GPS time when available
-
-					/* writing RX frequency */
-					printf("%10u,", p->freq_hz);
-
-					/* writing RF chain */
-					printf("%u,", p->rf_chain);
-
-					/* writing RX modem/IF chain */
-					printf("%2d,", p->if_chain);
-
-					/* writing status */
-					switch(p->status) {
-					case STAT_CRC_OK:
-						puts("\"CRC_OK\" ,");
-						break;
-					case STAT_CRC_BAD:
-						puts("\"CRC_BAD\",");
-						break;
-					case STAT_NO_CRC:
-						puts("\"NO_CRC\" ,");
-						break;
-					case STAT_UNDEFINED:
-						puts("\"UNDEF\"  ,");
-						break;
-					default:
-						puts("\"ERR\"    ,");
-					}
-
-					/* writing packet RSSI */
-					printf("%+.0f,", p->rssi);
-
-					/* writing packet average SNR */
-					//fprintf(log_file, "%+5.1f,", p->snr);
-
-					/* writing hex-encoded payload (bundled in 32-bit words) */
-					puts(" ");
-					for (j = 0; j < p->size; ++j) {
-						if ((j > 0) && (j%5 == 0))
-							puts("-");
-						printf("%02X", p->payload[j]);
-					}
-					if (p->payload[0] == 2) {
-						transmitter_numbers_reply |= p->payload[1];
-					}
-
-					/* end of log file line */
-					puts("\n");
-					//fflush(log_file);
-					//++pkt_in_log;
-				}
-			}
-		}
-
-		/* parse transmitter numbers reply */
-		for (j = 0; j < 8; ++j) {
-			if ((transmitter_numbers_reply & (1 << j)) == 1 << j) {
-				printf("Transmitter number %d accept command\n", j + 1);
-			}
-		}
-
-	} else if (action_flag == 't') {
-		/* single send transmit-data command*/
-		/* send packet */
-		printf("Sending set transmit mode command to selected transmitters ...");
-		i = lgw_send(txpkt); /* non-blocking scheduling of TX packet */
-		if (i == LGW_HAL_ERROR) {
-			printf("ERROR\n");
-			return EXIT_FAILURE;
-		} else {
-			/* wait for packet to finish sending */
-			do {
-				wait_ms(5);
-				lgw_status(TX_STATUS, &status_var); /* get TX status */
-			} while (status_var != TX_FREE);
-			printf("OK\n");
-		}
-		/* wait inter-packet delay */
-		wait_ms(delay);
-
-		time(&time_point);
-		/* receive packet */
-		printf("Waiting reply from all transmitters..\n");
-		//while (time(NULL) - time_point < 3) {
-		while ((quit_sig != 1) && (exit_sig != 1)) {
-			++cycle_count;
-
-			/* fetch packets */
-			nb_pkt = lgw_receive(ARRAY_SIZE(rxpkt), rxpkt);
-			if (nb_pkt == LGW_HAL_ERROR) {
-				MSG("ERROR: failed packet fetch, exiting\n");
-				return EXIT_FAILURE;
-			} else if (nb_pkt == 0) {
-				clock_nanosleep(CLOCK_MONOTONIC, 0, &sleep_time, NULL); /* wait a short time if no packets */
-				//check if 5sec past from last packet receive
-				for (int k = 0; k < 8; ++k) {
-					if ((transmitter_numbers & (1 << k)) == 1 << k) {
-						if (time_interval_ms(&log_time_point[k]) > 5000) {
-							if (is_logFileOpen) {
-								clock_gettime(CLOCK_REALTIME, &fetch_time);
-								x = gmtime(&(fetch_time.tv_sec));
-								sprintf(fetch_timestamp,"%04i-%02i-%02i %02i:%02i:%02i",(x->tm_year)+1900,(x->tm_mon)+1,x->tm_mday,x->tm_hour,x->tm_min,x->tm_sec); /* ISO 8601 format */
-								fprintf(log_file[4 * k + 1], "%s ", fetch_timestamp);
-								fputs("no data\n", log_file[4 * k + 1]);
-								fprintf(log_file[4 * k + 3], "%s ", fetch_timestamp);
-								fputs("no data\n", log_file[4 * k + 3]);
-								/*fprintf(log_file[10 * k + 5], "%s ", fetch_timestamp);
-								fputs("no data\n", log_file[10 * k + 5]);*/
-								//update log timer to wait 5sec again if no packets received
-								clock_gettime(CLOCK_REALTIME, &log_time_point[k]);
-							}
-						}
-					}
-					//time_interval_ms(&fetch_time) <
-				}
-			} else {
-				/* local timestamp generation until we get accurate GPS time */
-				clock_gettime(CLOCK_REALTIME, &fetch_time);
-				x = gmtime(&(fetch_time.tv_sec));
-				sprintf(fetch_timestamp,"%04i-%02i-%02i %02i:%02i:%02i.%04liZ",(x->tm_year)+1900,(x->tm_mon)+1,x->tm_mday,x->tm_hour,x->tm_min,x->tm_sec, ((fetch_time.tv_nsec)/1000000)); /* ISO 8601 format */
-			}
-
-			for (i=0; i < nb_pkt; ++i) {
-				p = &rxpkt[i];
-				if (transmitter_numbers_reply != transmitter_numbers) { //check if all transmitters reply
-					if ((p->status == STAT_CRC_OK) && ((transmitter_numbers & (1 << p->if_chain)) == 1 << p->if_chain)) {
-						transmitter_numbers_reply |= 1 << p->if_chain;
-						printf("Waiting reply from all transmitters..\n");
-					}
-				} else { //all transmitters reply and we are ready to log csv files
-					if (!is_logFileOpen) {
-						time(&now_time);
-						open_csv_log();
-						for (int k = 0; k < 8; ++k) {
-							clock_gettime(CLOCK_REALTIME, &log_time_point[k]);
-						}
-					}
-					if ((transmitter_numbers & (1 << p->if_chain)) == 1 << p->if_chain) { //if received packed from requested transmitters, and not from any other
-						//uint8_t llv[40];
-						//uint8_t ii = 0;
-						//uint8_t ii_t = 0;
-						uint8_t bv = 0;
-						//bool isTempPresent = false;
-
-						if (p->status == STAT_CRC_OK) {
-							++pkt_count;
-							int16_t val_t1 = 0;
-							int16_t val_t2 = 0;
-							//update log timer if packet from transmitter received
-							clock_gettime(CLOCK_REALTIME, &log_time_point[p->if_chain]);
-							// parse bits from received values
-							for (j = 0; j < p->size; ++j) {
-								bv = p->payload[j];
-								switch (j) {
-								case 0:
-									val_t1 = bv;
-									break;
-								case 1:
-									val_t1 |= bv << 8;
-									break;
-								case 2:
-									val_t2 = bv;
-									break;
-								case 3:
-									val_t2 |= bv << 8;
-									break;
-
-								}
-
-								//printf("x=%d, y=%d, z=%d\n", received_value_x, received_value_y, received_value_z);
-								//printf("llv[%i]=%i ", k, llv[k]);
-
-								//fprintf(log_file[10 * p->if_chain + 4], "%i,", received_value_z);
-								//ii = 0;
-
-								//puts("-");
-
-							}
-							fprintf(log_file[4 * p->if_chain], "%i,", val_t1);
-							fprintf(log_file[4 * p->if_chain + 2], "%i,", val_t2);
-
-						}
-
-						/* writing packet RSSI */
-						//printf("RSSI %+.0f,", p->rssi);
-
-						/* writing packet average SNR */
-						//fprintf(log_file, "%+5.1f,", p->snr);
-
-						/* writing hex-encoded payload (bundled in 32-bit words) */
-						printf("Receive packet number %d\n", pkt_count);
-						/*for (j = 0; j < p->size; ++j) {
-						    if ((j > 0) && (j%5 == 0)) puts("-");
-						    printf("%02X", p->payload[j]);
-						}*/
-						/*if (p->payload[0] == 2) {
-						  transmitter_numbers_reply |= p->payload[1];
-						}*/
-
-						/* end of log file line */
-						//puts("\"\n");
-						//fflush(log_file);
-						//++pkt_in_log;
-					}
-				}
-			}
-		}
-		if (is_logFileOpen) {
-			close_csv_log();
-		}
-
-		/* parse transmitter numbers reply */
-		/*for (j = 0; j < 8; ++j) {
-		  if ((transmitter_numbers_reply & (1 << j)) == 1 << j) {
-		    printf("Transmitter number %d accept command\n", j);
-		  }
-		}*/
-
-
-	} else if (action_flag == 'd') {
-		/* single send transmit-data command*/
-		/* send packet */
-		printf("Sending disable transmit mode command and set selected transmitters in to standby mode");
-		i = lgw_send(txpkt); /* non-blocking scheduling of TX packet */
-		if (i == LGW_HAL_ERROR) {
-			printf("ERROR\n");
-			return EXIT_FAILURE;
-		} else {
-			/* wait for packet to finish sending */
-			do {
-				wait_ms(5);
-				lgw_status(TX_STATUS, &status_var); /* get TX status */
-			} while (status_var != TX_FREE);
-			printf("OK\n");
-		}
-		/* wait inter-packet delay */
-		wait_ms(delay);
-
-		time(&time_point);
-		/* receive packet */
-		while (time(NULL) - time_point < 2) {
-			++cycle_count;
-
-			/* fetch packets */
-			nb_pkt = lgw_receive(ARRAY_SIZE(rxpkt), rxpkt);
-			if (nb_pkt == LGW_HAL_ERROR) {
-				MSG("ERROR: failed packet fetch, exiting\n");
-				return EXIT_FAILURE;
-			} else if (nb_pkt == 0) {
-				clock_nanosleep(CLOCK_MONOTONIC, 0, &sleep_time, NULL); /* wait a short time if no packets */
-			} else {
-				/* local timestamp generation until we get accurate GPS time */
-				clock_gettime(CLOCK_REALTIME, &fetch_time);
-				x = gmtime(&(fetch_time.tv_sec));
-				sprintf(fetch_timestamp,"%04i-%02i-%02i %02i:%02i:%02i.%04liZ",(x->tm_year)+1900,(x->tm_mon)+1,x->tm_mday,x->tm_hour,x->tm_min,x->tm_sec, ((fetch_time.tv_nsec)/1000000)); /* ISO 8601 format */
-			}
-
-			for (i=0; i < nb_pkt; ++i) {
-				p = &rxpkt[i];
-
-				if (p->status != STAT_CRC_OK) {
-					puts("\"CRC_ERROR\" ");
-				}
-
-				if (p->status == STAT_CRC_OK) {
-
-					/* writing packet RSSI */
-					printf("%+.0f,", p->rssi);
-
-					/* writing packet average SNR */
-					//fprintf(log_file, "%+5.1f,", p->snr);
-
-					/* writing hex-encoded payload (bundled in 32-bit words) */
-					puts("\"");
-					for (j = 0; j < p->size; ++j) {
-						if ((j > 0) && (j%5 == 0))
-							puts("-");
-						printf("%02X", p->payload[j]);
-					}
-
-					if (p->payload[0] == 5) {
-						transmitter_numbers_reply |= p->payload[1];
-					}
-
-					/* end of log file line */
-					puts("\"\n");
-					//fflush(log_file);
-					//++pkt_in_log;
-				}
-			}
-		}
-
-		/* parse transmitter numbers reply */
-		for (j = 0; j < 8; ++j) {
-			if ((transmitter_numbers_reply & (1 << j)) == 1 << j) {
-				printf("Transmitter number %d accept command\n", j + 1);
-			}
-		}
-
-	} else if (action_flag == 'c') {
-		/* single send check in range command*/
-		/* send packet */
-		printf("Sending check in range command");
-		clock_gettime(CLOCK_REALTIME, &fetch_time);
-		while (time_interval_ms(&fetch_time) < send_duration_ms) {
-			/* send packet */
-			i = lgw_send(txpkt); /* non-blocking scheduling of TX packet */
-			if (i == LGW_HAL_ERROR) {
-				printf("ERROR\n");
-				return EXIT_FAILURE;
-			} else {
-				/* wait for packet to finish sending */
-				do {
-					wait_ms(5);
-					lgw_status(TX_STATUS, &status_var); /* get TX status */
-				} while (status_var != TX_FREE);
-				/*printf("OK\n");*/
-			}
-			/* wait inter-packet delay */
-			wait_ms(delay);
-		}
-		printf("OK\n");
-
-		/* wait inter-packet delay */
-		wait_ms(delay);
-
-		time(&time_point);
-		/* receive packet */
-		while (time(NULL) - time_point < 2) {
-			++cycle_count;
-
-			/* fetch packets */
-			nb_pkt = lgw_receive(ARRAY_SIZE(rxpkt), rxpkt);
-			if (nb_pkt == LGW_HAL_ERROR) {
-				MSG("ERROR: failed packet fetch, exiting\n");
-				return EXIT_FAILURE;
-			} else if (nb_pkt == 0) {
-				clock_nanosleep(CLOCK_MONOTONIC, 0, &sleep_time, NULL); /* wait a short time if no packets */
-			} else {
-				/* local timestamp generation until we get accurate GPS time */
-				clock_gettime(CLOCK_REALTIME, &fetch_time);
-				x = gmtime(&(fetch_time.tv_sec));
-				sprintf(fetch_timestamp,"%04i-%02i-%02i %02i:%02i:%02i.%04liZ",(x->tm_year)+1900,(x->tm_mon)+1,x->tm_mday,x->tm_hour,x->tm_min,x->tm_sec, ((fetch_time.tv_nsec)/1000000)); /* ISO 8601 format */
-			}
-
-			for (i=0; i < nb_pkt; ++i) {
-				p = &rxpkt[i];
-
-				if (p->status != STAT_CRC_OK) {
-					puts("\"CRC_ERROR\" ");
-				}
-
-				if (p->status == STAT_CRC_OK) {
-
-					/* writing packet RSSI */
-					printf("%+.0f,", p->rssi);
-
-					/* writing packet average SNR */
-					//fprintf(log_file, "%+5.1f,", p->snr);
-
-					/* writing hex-encoded payload (bundled in 32-bit words) */
-					puts("\"");
-					for (j = 0; j < p->size; ++j) {
-						if ((j > 0) && (j%5 == 0))
-							puts("-");
-						printf("%02X", p->payload[j]);
-					}
-
-					if (p->payload[0] == 7) {
-						transmitter_numbers_reply |= p->payload[1];
-					}
-					puts("\"\n");
-				}
-			}
-		}
-
-		/* parse transmitter numbers reply */
-		for (j = 0; j < 8; ++j) {
-			if ((transmitter_numbers_reply & (1 << j)) == 1 << j) {
-				printf("Transmitter number %d accept command\n", j + 1);
-			}
-		}
-	} 
+ 
 /********************************* programming *************************************************/
-	else if (action_flag == 'p') {
+	if (action_flag == 'p') {
 	 //programming device
 		/* waiting 15sec for any message from selected transmitter */
 		/* receive packet */
@@ -1749,53 +1272,65 @@ int main(int argc, char **argv) {
 		}	
 			
     /* to do: waiting 0x0C message*/
+    /* wait inter-packet delay */		
+	//wait_ms(delay);
    
-    if (wait_mess(0x0C,transmitter_numbers) != true) {
-        MSG("no answer\n");
-        lgw_stop();
-        return EXIT_FAILURE;
-    }
-    if (p->payload[2] == 0) {
-        MSG("reprogramming is finished\n");
-    } else {
-		MSG("transmission error\n");
-		MSG("error headers - %d\n",p->payload[3]);
-		MSG("error packets - %d\n",p->payload[4]);
-		MSG("message size - %d\n",p->size);
-        if((p->size >= 7)&&(p->size%2)){			//should be odd
-			for(int ii = 4; ii < p->size-1;)
-			{
-				uint16_t messageErr = p->payload[++ii];
-				messageErr += (uint16_t)(p->payload[++ii] << 8);
-				MSG("Resend packet N - %d\n", messageErr);
-				//****repeating errorneous packet***//
-				wait_ms(100);//some delay 
-				sendBuffer[0] = messageErr;
-				j = messageErr*(PROG_BUF_SIZE - 1);
-				for(i = 0;i < PROG_BUF_SIZE - 1;i++){
-					sendBuffer[i + 1] = bfBuff[j+i];
+	//if (wait_mess(0x0C,transmitter_numbers) != true) {
+        //MSG("no answer\n");
+        //lgw_stop();
+        //return EXIT_FAILURE;
+    //}
+ /* wait inter-packet delay */
+		wait_ms(delay);
+
+		/* wait for reply command 0x0C*/
+		time(&time_point);
+		/* receive packet */
+		flag_received_reply = false;
+		//received_reply_from = 0;
+		while (time(NULL) - time_point < 2 && (flag_received_reply != true)) {
+			++cycle_count;
+
+			/* fetch packets */
+			nb_pkt = lgw_receive(ARRAY_SIZE(rxpkt), rxpkt);
+			if (nb_pkt == LGW_HAL_ERROR) {
+				MSG("ERROR: failed packet fetch, exiting\n");
+				return EXIT_FAILURE;
+			} else if (nb_pkt == 0) {
+				clock_nanosleep(CLOCK_MONOTONIC, 0, &sleep_time, NULL); /* wait a short time if no packets */
+			} else {
+				for (i=0; i < nb_pkt; ++i) {
+					p = &rxpkt[i];
+
+					if (p->status != STAT_CRC_OK) {
+						puts("\"CRC_ERROR\" ");
+						for(int ii = 0; ii< p->size;ii++)printf("%x ",p->payload[ii]);
+						printf("\n\r");
+						
+					}
+
+					if (p->status == STAT_CRC_OK) {
+
+						/* writing packet RSSI */
+						//printf("rssi=%+.0f, %lu\n", p->rssi, sizeof(p->rssi));
+
+						if (p->payload[0] == 0x0C) {
+							printf("0x0C received, byte[3]=%d\n", p->payload[3]);
+							for(int ii = 0; ii< p->size;ii++)printf("%x ",p->payload[ii]);
+							printf("\n\r");
+							if (p->payload[1] ==sensorNum) {
+								//printf("%x, - %x\n", p->payload[2], p->payload[3]);
+								flag_received_reply = true;
+								break;
+							}
+							//printf("rceived 0x0B");
+						}
+						puts("\"\n");
+					}
 				}
-				buffCRC = crc32(sendBuffer, PROG_BUF_SIZE);
-				memcpy(&sendBuffer[PROG_BUF_SIZE],&buffCRC,4);  //write crc
-				memcpy(txpkt.payload,sendBuffer,PROG_BUF_SIZE + 4);
-				r = lgw_send(txpkt); /* non-blocking scheduling of TX packet */
-				if (r == LGW_HAL_ERROR) {
-					printf("ERROR\n");
-					
-					return EXIT_FAILURE;
-				} else {
-					/* wait for packet to finish sending */
-					do {
-						wait_ms(2);
-						lgw_status(TX_STATUS, &status_var); /* get TX status */
-					} while (status_var != TX_FREE);
-					printf("Packet %d send OK\n", sendBuffer[0]);	
-					
-				 }
 			}
-			
 		}
-		if (wait_mess(0x0C,transmitter_numbers) != true) {
+		if (flag_received_reply != true) {
 			MSG("no answer\n");
 			lgw_stop();
 			return EXIT_FAILURE;
@@ -1803,12 +1338,106 @@ int main(int argc, char **argv) {
 		if (p->payload[2] == 0) {
 			MSG("reprogramming is finished\n");
 		} else {
-			MSG("transmission error\n");			
+			MSG("transmission error\n");
+			MSG("error headers - %d\n",p->payload[3]);
+			MSG("error packets - %d\n",p->payload[4]);
+			MSG("message size - %d\n",p->size);
+			if((p->size >= 7)&&(p->size%2)){			//should be odd
+				for(int ii = 4; ii < p->size-1;)
+				{
+					uint16_t messageErr = p->payload[++ii];
+					messageErr += (uint16_t)(p->payload[++ii] << 8);
+					MSG("Resend packet N - %d\n", messageErr);
+					//****repeating errorneous packet***//
+					wait_ms(100);//some delay 
+					sendBuffer[0] = messageErr;
+					j = messageErr*(PROG_BUF_SIZE - 1);
+					for(i = 0;i < PROG_BUF_SIZE - 1;i++){
+						sendBuffer[i + 1] = bfBuff[j+i];
+					}
+					buffCRC = crc32(sendBuffer, PROG_BUF_SIZE);
+					memcpy(&sendBuffer[PROG_BUF_SIZE],&buffCRC,4);  //write crc
+					memcpy(txpkt.payload,sendBuffer,PROG_BUF_SIZE + 4);
+					r = lgw_send(txpkt); /* non-blocking scheduling of TX packet */
+					if (r == LGW_HAL_ERROR) {
+						printf("ERROR\n");
+						
+						return EXIT_FAILURE;
+					} else {
+						/* wait for packet to finish sending */
+						do {
+							wait_ms(2);
+							lgw_status(TX_STATUS, &status_var); /* get TX status */
+						} while (status_var != TX_FREE);
+						printf("Packet %d send OK\n", sendBuffer[0]);	
+						
+					 }
+				}
+				
+			}
+			wait_ms(delay);
+
+			/* wait for reply command 0x0C*/
+			time(&time_point);
+			/* receive packet */
+			flag_received_reply = false;
+			//received_reply_from = 0;
+			while (time(NULL) - time_point < 2 && (flag_received_reply != true)) {
+				++cycle_count;
+
+				/* fetch packets */
+				nb_pkt = lgw_receive(ARRAY_SIZE(rxpkt), rxpkt);
+				if (nb_pkt == LGW_HAL_ERROR) {
+					MSG("ERROR: failed packet fetch, exiting\n");
+					return EXIT_FAILURE;
+				} else if (nb_pkt == 0) {
+					clock_nanosleep(CLOCK_MONOTONIC, 0, &sleep_time, NULL); /* wait a short time if no packets */
+				} else {
+					for (i=0; i < nb_pkt; ++i) {
+						p = &rxpkt[i];
+
+						if (p->status != STAT_CRC_OK) {
+							puts("\"CRC_ERROR\" ");
+							for(int ii = 0; ii< p->size;ii++)printf("%x ",p->payload[ii]);
+							printf("\n\r");
+							
+						}
+
+						if (p->status == STAT_CRC_OK) {
+
+							/* writing packet RSSI */
+							//printf("rssi=%+.0f, %lu\n", p->rssi, sizeof(p->rssi));
+
+							if (p->payload[0] == 0x0C) {
+								printf("0x0C received, byte[3]=%d\n", p->payload[3]);
+								for(int ii = 0; ii< p->size;ii++)printf("%x ",p->payload[ii]);
+								printf("\n\r");
+								if (p->payload[1] ==sensorNum) {
+									//printf("%x, - %x\n", p->payload[2], p->payload[3]);
+									flag_received_reply = true;
+									break;
+								}
+								//printf("rceived 0x0B");
+							}
+							puts("\"\n");
+						}
+					}
+				}
+			}
+			if (flag_received_reply != true) {
+				MSG("no answer\n");
+				lgw_stop();
+				return EXIT_FAILURE;
+			}
+			if (p->payload[2] == 0) {
+				MSG("reprogramming is finished\n");
+			} else {
+				MSG("transmission error\n");			
+			}
+			/* clean up before leaving */
+			lgw_stop();
+			return EXIT_FAILURE;
 		}
-        /* clean up before leaving */
-		lgw_stop();
-        return EXIT_FAILURE;
-    }
 
   }
 
