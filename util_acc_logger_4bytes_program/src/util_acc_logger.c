@@ -3,6 +3,8 @@
  *		Configuring LoRa concentrator, send packets to remote transmitter on settable
  *		frequency, configure remote transmitter, record packets (accelerometer data)
  *		recived from transmitter to CSV file.
+ * 		sudo ./util_acc_logger -r -n30 - receive raw data from sensor #30
+ * 		sudo ./util_acc_logger -p -n30 - reprogram sensor #30 with program.bin
  */
 
 
@@ -31,6 +33,11 @@
 #include "loragw_hal.h"
 #include "loragw_reg.h"
 #include "loragw_aux.h"
+
+/**raw data*/
+#define PAGE_SAMPLES 28
+#define REM_BYTES (PAGE_SAMPLES%2?PAGE_SAMPLES/2+1:PAGE_SAMPLES/2)
+#define REM_SIGNS (PAGE_SAMPLES%8?(PAGE_SAMPLES/8 + 1):PAGE_SAMPLES/8)
 
 
 /* CRC */
@@ -105,6 +112,8 @@ time_t log_start_time;
 FILE * log_file[80] = {NULL};
 bool is_logFileOpen = false;
 char log_file_name[64];
+FILE * rawData_file = NULL;
+char rawData_file_name[64];
 
 /* TX gain LUT table */
 static struct lgw_tx_gain_lut_s txgain_lut = {
@@ -427,7 +436,26 @@ void open_csv_log(void) {
 	MSG("INFO: Now writing to csv and log files\n");
 	return;
 }
+void open_raw_data_log(void)
+{
+	char iso_date[20];
 
+	strftime(iso_date,ARRAY_SIZE(iso_date),"%Y-%m-%d_%H:%M:%S",gmtime(&now_time)); /* format yyyymmddThhmmss */
+	printf("Open csv and log file for raw data\n");
+	sprintf(rawData_file_name, "%s.csv", iso_date);
+	rawData_file = fopen(rawData_file_name,"a"); /* create log file */
+    if (rawData_file == NULL) {
+        MSG("ERROR: impossible to create raw data file %s\n", rawData_file_name);
+        exit(EXIT_FAILURE);
+    }
+    int i = fprintf(rawData_file, "\"X\",\"Y\",\"Z\"\n");
+    if (i < 0) {
+        MSG("ERROR: impossible to write to raw data file %s\n", rawData_file_name);
+        exit(EXIT_FAILURE);
+    }
+    MSG("INFO: Now writing to raw data file %s\n", rawData_file_name);
+    return;
+}
 void close_csv_log(void) {
 	int j;
 	for (j = 0; j < 8; ++j) {
@@ -456,59 +484,7 @@ uint8_t parse_bitaddres_to_number(uint8_t n) { //return number of transmitter by
   }
   return 0;
 }
-/************************************************************************
- * 
- * return 1 - received command from tx_number
- * 		  0  - otherwise
- * 		  2  - error
- * **********************************************************************/
-uint8_t wait_mess(uint8_t command, uint8_t tx_number)
-{
-	bool flag;
-	time_t time_point;
-	/* to do: waiting command message*/
-    time(&time_point);
-    struct timespec sleep_time = {0, 3000000}; /* 3 ms */
-    /* receive packet */
-    flag = false;
-   // received = 0;
-    while (time(NULL) - time_point < 2 && (flag != true)) {
-      //++cycle_count;
 
-      /* fetch packets */
-      nb_pkt = lgw_receive(ARRAY_SIZE(rxpkt), rxpkt);
-      if (nb_pkt == LGW_HAL_ERROR) {
-        MSG("ERROR: failed packet fetch, exiting\n");
-        return 2; //exit failure
-      } else if (nb_pkt == 0) {
-        clock_nanosleep(CLOCK_MONOTONIC, 0, &sleep_time, NULL); /* wait a short time if no packets */
-      } else {
-        for (int i=0; i < nb_pkt; ++i) {
-          p = &rxpkt[i];
-
-          if (p->status != STAT_CRC_OK) {
-            puts("\"CRC_ERROR\" ");
-          }
-
-          if (p->status == STAT_CRC_OK) {
-
-
-            if (p->payload[0] == command) {
-              if ((1 << (p->payload[1] - 1)) == tx_number) {
-                
-                flag = true;
-                break;
-              }
-              //printf("rceived 0x0B");
-            }
-            puts("\"\n");
-          }
-        }
-      }
-    }
-    if(flag != true)return 0;
-    else return 1;
-}
 
 /* -------------------------------------------------------------------------- */
 /* --- MAIN FUNCTION -------------------------------------------------------- */
@@ -588,7 +564,7 @@ int main(int argc, char **argv) {
 		return EXIT_FAILURE;
 	}
 
-	while ((i = getopt (argc, argv, "hetdcpn:")) != -1) {
+	while ((i = getopt (argc, argv, "herdcpn:")) != -1) {
 		char *p_ch;
 		switch (i) {
 		case 'h':
@@ -600,8 +576,8 @@ int main(int argc, char **argv) {
 			action_flag = 'e';
 			break;
 
-		case 't':
-			action_flag = 't';
+		case 'r':
+			action_flag = 'r';
 			break;
 
 		case 'd':
@@ -952,13 +928,13 @@ int main(int argc, char **argv) {
 		txpkt.payload[0] = 0x01;
 		txpkt.payload[1] = transmitter_numbers;
 		break;
-	case 't':
+	case 'r':
 		txpkt.payload[0] = 0x03;
-		txpkt.payload[1] = transmitter_numbers;
+		txpkt.payload[1] = sensorNum;
 		break;
 	case 'd':
 		txpkt.payload[0] = 0x04;
-		txpkt.payload[1] = transmitter_numbers;
+		txpkt.payload[1] = sensorNum;
 		break;
 	case 'c':
 		txpkt.payload[0] = 0x06;
@@ -975,7 +951,7 @@ int main(int argc, char **argv) {
 	time_t time_point;
  
 /********************************* programming *************************************************/
-	if (action_flag == 'p') {
+	if ((action_flag == 'p')||(action_flag == 'r')) {
 	 //programming device
 		/* waiting 15sec for any message from selected transmitter */
 		/* receive packet */
@@ -1037,7 +1013,8 @@ int main(int argc, char **argv) {
 
 		/* single send request programming command 0x08*/
 		/* send packet */
-		printf("\nSending 0x08 command to selected transmitter ...\n\n");
+		if (action_flag == 'p')printf("\nSending 0x08 command to selected transmitter ...\n\n");
+		else printf("\nSending 0x03 command to selected transmitter ...\n\n");
 		i = lgw_send(txpkt); /* non-blocking scheduling of TX packet */
 		if (i == LGW_HAL_ERROR) {
 			printf("ERROR\n");
@@ -1052,7 +1029,72 @@ int main(int argc, char **argv) {
 		}
 		/* wait inter-packet delay */
 		//wait_ms(delay);
-
+/**************************read row data start******************************/
+		if (action_flag == 'r'){
+			printf("\nEntering infinite loop...\n\n");
+			struct dataFromSensor{
+				  uint8_t rawX[PAGE_SAMPLES];  
+				  uint8_t rawY[PAGE_SAMPLES];
+				  uint8_t rawZ[PAGE_SAMPLES];
+				  uint8_t rawXrem[REM_BYTES];  
+				  uint8_t rawYrem[REM_BYTES];
+				  uint8_t rawZrem[REM_BYTES];
+				  uint8_t rawXsign[REM_SIGNS];
+				  uint8_t rawYsign[REM_SIGNS];
+				  uint8_t rawZsign[REM_SIGNS];
+				}; 
+			struct dataFromSensor * inData; 
+			int16_t X[PAGE_SAMPLES];
+			int16_t Y[PAGE_SAMPLES];
+			int16_t Z[PAGE_SAMPLES]; 
+			int numPack = 1;
+			time(&now_time);
+			open_raw_data_log();
+			while ((quit_sig != 1) && (exit_sig != 1)) {
+				nb_pkt = lgw_receive(ARRAY_SIZE(rxpkt), rxpkt);
+				if (nb_pkt == LGW_HAL_ERROR) {
+					MSG("ERROR: failed packet fetch, exiting\n");
+					fclose(rawData_file);
+					return EXIT_FAILURE;
+				} else if (nb_pkt == 0) {
+					clock_nanosleep(CLOCK_MONOTONIC, 0, &sleep_time, NULL); /* wait a short time if no packets */
+				}
+				for (i=0,j=1; i < nb_pkt; ++i) {
+					p = &rxpkt[i];
+					if((p->size == sizeof(struct dataFromSensor))&&(p->status == STAT_CRC_OK)){
+						inData = p->payload;
+						for(int ii = 0; ii< PAGE_SAMPLES;ii++){
+							  X[ii] = inData->rawX[ii];
+							  if(ii%2 == 0) X[ii] |= ((uint16_t)(inData->rawXrem[ii/2])<<8)&0x0f00; //low nimble
+							  else X[ii] |= ((uint16_t)(inData->rawXrem[ii/2])<<4)&0x0f00;//high nimble
+							  if((inData->rawXsign[ii/8])&(1<<ii%8))X[ii] |= 0xF000;  //negativ	
+							  Y[ii] = inData->rawY[ii];
+							  if(ii%2 == 0) Y[ii] |= ((uint16_t)(inData->rawYrem[ii/2])<<8)&0x0f00; //low nimble
+							  else Y[ii] |= ((uint16_t)(inData->rawYrem[ii/2])<<4)&0x0f00;//high nimble
+							  if((inData->rawYsign[ii/8])&(1<<ii%8))Y[ii] |= 0xF000;  //negativ	
+							  Z[ii] = inData->rawZ[ii];
+							  if(ii%2 == 0) Z[ii] |= ((uint16_t)(inData->rawZrem[ii/2])<<8)&0x0f00; //low nimble
+							  else Z[ii] |= ((uint16_t)(inData->rawZrem[ii/2])<<4)&0x0f00;//high nimble
+							  if((inData->rawZsign[ii/8])&(1<<ii%8))Z[ii] |= 0xF000;  //negativ	
+							  fprintf(rawData_file,"%d,%d,%d\n",X[ii],Y[ii],Z[ii]);					  
+						}
+						fflush(rawData_file);
+						printf("Package %d is received\n",numPack);
+						j++;
+						numPack++;
+					}
+				}//end_for	 
+			}//end_while
+			i = lgw_stop();
+			if (i == LGW_HAL_SUCCESS) {
+				printf("INFO: concentrator stopped successfully\n");
+			} else {
+				printf("WARNING: failed to stop concentrator successfully\n");
+			}
+			fclose(rawData_file);
+			return EXIT_SUCCESS;
+		}
+/**********************read row data end***********************************/
 		/* wait for reply command 0x09*/
 		time(&time_point);
 		/* receive packet */
@@ -1174,7 +1216,7 @@ int main(int argc, char **argv) {
 		}
 		/* wait inter-packet delay */
 		wait_ms(delay);
-
+		
 		/* wait for reply command 0x0B*/
 		time(&time_point);
 		/* receive packet */
@@ -1444,7 +1486,6 @@ int main(int argc, char **argv) {
 
 	/* clean up before leaving */
 	lgw_stop();
-
 	printf("Exiting program\n");
 	return EXIT_SUCCESS;
 }
