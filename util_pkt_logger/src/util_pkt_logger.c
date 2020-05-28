@@ -696,6 +696,7 @@ int main(int argc, char **argv)
 
             /* writing packet RSSI */
             fprintf(log_file, "%+.0f,", p->rssi);
+            //printf("RSSI = %d SNR = %d  ",ROUND(p->rssi),ROUND(p->snr));
 
             /* writing packet average SNR */
             fprintf(log_file, "%+5.1f,", p->snr);
@@ -705,9 +706,11 @@ int main(int argc, char **argv)
             for (j = 0; j < p->size; ++j) {
                 if ((j > 0) && (j%4 == 0)) fputs("-", log_file);
                 fprintf(log_file, "%02X", p->payload[j]);
+                //printf("%02X", p->payload[j]);          // to terminal 
             }
 
             /* end of log file line */
+            //printf("\n");          // to terminal 
             fputs("\"\n", log_file);
             fflush(log_file);
             ++pkt_in_log;
@@ -730,6 +733,8 @@ int main(int argc, char **argv)
                 /* publish the message */
                 char application_message[sizeof(mqtt_message)+sizeof(timebuf)+1];
                 sprintf(application_message,"%s,%s",fetch_timestamp,mqtt_message);
+                rssi = p->rssi;
+                snr = p->snr;
                 if(!samePayload){
 
                     printf("MQTT message %s,%s \n", timebuf,mqtt_message);
@@ -748,12 +753,11 @@ int main(int argc, char **argv)
                         fprintf(stderr, "error: %s\n", mqtt_error_str(clientRSSI.error));
                         exit_sig = 1; //exit_example(EXIT_FAILURE, sockfd, &client_daemon);
                     }
-					rssi = p->rssi;
-					snr = p->snr;
+					
                 }
                 else{
-					if(p->rssi > rssi)rssi = p->rssi;
-					if(p->snr > snr)snr = p->snr;
+					//if(p->rssi > rssi)rssi = p->rssi;
+					//if(p->snr > snr)snr = p->snr;
 					printf("MQTT message not published %s,%s \n", timebuf,mqtt_message);
 					printf("RSSI = %d SNR = %d\n",ROUND(rssi),ROUND(snr));
 				}

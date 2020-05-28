@@ -1,2 +1,0 @@
-"gateway ID","node MAC","UTC timestamp","us count","frequency","RF chain","RX chain","status","size","modulation","bandwidth","datarate","coderate","RSSI","SNR","payload"
-"AA555A0000000101","","2020-02-04 14:12:31.167Z",3681245164, 864640000,0, 3,"CRC_OK" , 32,"LORA",125000,"SF8"   ,"4/5",-39,+13.0,"04000000-03000000-00000100-00000000-00000000-00000000-00000000-00000000"
