@@ -735,7 +735,8 @@ int main(int argc, char **argv)
                 sprintf(application_message,"%s,%s",fetch_timestamp,mqtt_message);
                 rssi = p->rssi;
                 snr = p->snr;
-                if(!samePayload){
+                if((!samePayload)&&((p->payload[1] == 1)||(p->payload[1] == 2)||(p->payload[1] == 3)||(p->payload[0] == 34)))
+                {
 
                     printf("MQTT message %s,%s \n", timebuf,mqtt_message);
                     mqtt_publish(&client, topic, application_message, strlen(application_message), MQTT_PUBLISH_QOS_0);
@@ -755,12 +756,14 @@ int main(int argc, char **argv)
                     }
 					
                 }
+                /*
                 else{
 					//if(p->rssi > rssi)rssi = p->rssi;
 					//if(p->snr > snr)snr = p->snr;
 					printf("MQTT message not published %s,%s \n", timebuf,mqtt_message);
 					printf("RSSI = %d SNR = %d\n",ROUND(rssi),ROUND(snr));
 				}
+                */
             }
 /********************************************end MQTT section*****************************************/
             }
